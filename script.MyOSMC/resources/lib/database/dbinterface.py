@@ -279,7 +279,7 @@ def get_setting(key):
 		r = DBInterface().getSetting(key)
 	except KeyError:
 		r = "KeyError: Key not found in database"
-	return r
+	return str(r)
 
 def CLI(args, provided_db=None):
 	global DATABASE_PATH
