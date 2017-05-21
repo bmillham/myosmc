@@ -1,54 +1,35 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+"""speedtest-osmc: put osmc license and other stuff here"""
+
 from __future__ import division, print_function
 import os
-import re
-import csv
-import sys
 import math
-import errno
-import signal
 import socket
 import timeit
-import time
 import datetime
 import platform
 import xml.parsers.expat
-
-try:
-    import gzip
-    GZIP_BASE = gzip.GzipFile
-except ImportError:
-    print("Unable to import gzip")
-    gzip = None
-    GZIP_BASE = object
-
-import json
+import sys
 import xml.etree.cElementTree as ET
 from urllib2 import urlopen, Request, HTTPError, URLError
 from httplib import HTTPConnection
-from httplib import HTTPSConnection
-from Queue import Queue
 from urlparse import urlparse
-from urlparse import parse_qs
-from hashlib import md5
-from cStringIO import StringIO
-BytesIO = None
 
-import ssl
-try:
-    CERT_ERROR = (ssl.CertificateError,)
-except AttributeError:
-    CERT_ERROR = tuple()
-HTTP_ERRORS = ((HTTPError, URLError, socket.error, ssl.SSLError) +
-               CERT_ERROR)
+HTTP_ERRORS = ((HTTPError, URLError, socket.error))
 
 SCHEME = 'http'
 __version__ = '0.1'
 
+def get_exception():
+    """Helper function to work with py2.4-py3 for getting the current
+    exception in a try/except block
+    """
+    return sys.exc_info()[1]
 
 class SpeedTestRequest(object):
+    """A request object that adds user_agent"""
     def __init__(self):
         self._user_agent = None
 
@@ -118,28 +99,11 @@ class SpeedTestRequest(object):
         """
 
         try:
-            uh = urlopen(request)
-            return uh, False
+            conn = urlopen(request)
+            return conn, False
         except HTTP_ERRORS:
-            e = get_exception()
-            return None, e
-
-
-    def get_response_stream(self, response):
-        """Helper function to return either a Gzip reader if
-        ``Content-Encoding`` is ``gzip`` otherwise the response itself
-
-        """
-
-        try:
-            getheader = response.headers.getheader
-        except AttributeError:
-            getheader = response.getheader
-
-        if getheader('content-encoding') == 'gzip':
-            return GzipDecodedResponse(response)
-
-        return response
+            exc = get_exception()
+            return None, exc
 
 
 class SpeedtestException(Exception):
@@ -164,122 +128,95 @@ class SpeedtestResults(object):
     to get a share results image link.
     """
 
-    def __init__(self, download=0, upload=0, ping=0, server=None):
-        self.download = download
-        self.upload = upload
-        self.ping = ping
-        if server is None:
-            self.server = {}
-        else:
-            self.server = server
-        self._share = None
-        self.timestamp = '%sZ' % datetime.datetime.utcnow().isoformat()
-        self.bytes_received = 0
-        self.bytes_sent = 0
+    def __init__(self):
+        self._download = 0
+        self._upload = 0
+        self._ping = 0
+        self._server = {}
+        self._timestamp = '%sZ' % datetime.datetime.utcnow().isoformat()
+        self._bytes_received = 0
+        self._bytes_sent = 0
+
+    @property
+    def bytes_sent(self):
+        """Bytes sent during the test"""
+        return self._bytes_sent
+
+    @bytes_sent.setter
+    def bytes_sent(self, value):
+        self._bytes_sent = value
+
+    @property
+    def upload(self):
+        """Uploaded"""
+        return self._upload
+
+    @upload.setter
+    def upload(self, value):
+        self._upload = value
+
+    @property
+    def timestamp(self):
+        """When the test was run"""
+        return self._timestamp
+
+    @property
+    def bytes_received(self):
+        """Bytes received from the server"""
+        return self._bytes_received
+
+    @bytes_received.setter
+    def bytes_received(self, value):
+        self._bytes_received = value
+
+    @property
+    def download(self):
+        """Amount downloaded"""
+        return self._download
+
+    @download.setter
+    def download(self, value):
+        self._download = value
+
+    @property
+    def ping(self):
+        """Ping time"""
+        return self._ping
+
+    @ping.setter
+    def ping(self, value):
+        self._ping = value
+
+    @property
+    def server(self):
+        """Speedtest.net server"""
+        return self._server
+
+    @server.setter
+    def server(self, value):
+        self._server = value
 
     def __repr__(self):
         return repr(self.dict())
 
-    def share(self):
-        """POST data to the speedtest.net API to obtain a share results
-        link
-        """
-
-        if self._share:
-            return self._share
-
-        download = int(round(self.download / 1000.0, 0))
-        ping = int(round(self.ping, 0))
-        upload = int(round(self.upload / 1000.0, 0))
-
-        # Build the request to send results back to speedtest.net
-        # We use a list instead of a dict because the API expects parameters
-        # in a certain order
-        api_data = [
-            'recommendedserverid=%s' % self.server['id'],
-            'ping=%s' % ping,
-            'screenresolution=',
-            'promo=',
-            'download=%s' % download,
-            'screendpi=',
-            'upload=%s' % upload,
-            'testmethod=http',
-            'hash=%s' % md5(('%s-%s-%s-%s' %
-                             (ping, upload, download, '297aae72'))
-                            .encode()).hexdigest(),
-            'touchscreen=none',
-            'startmode=pingselect',
-            'accuracy=1',
-            'bytesreceived=%s' % self.bytes_received,
-            'bytessent=%s' % self.bytes_sent,
-            'serverid=%s' % self.server['id'],
-        ]
-
-        headers = {'Referer': 'http://c.speedtest.net/flash/speedtest.swf'}
-        request = build_request('://www.speedtest.net/api/api.php',
-                                data='&'.join(api_data).encode(),
-                                headers=headers)
-        f, e = catch_request(request)
-        if e:
-            raise ShareResultsConnectFailure(e)
-
-        response = f.read()
-        code = f.code
-        f.close()
-
-        if int(code) != 200:
-            raise ShareResultsSubmitFailure('Could not submit results to '
-                                            'speedtest.net')
-
-        qsargs = parse_qs(response.decode())
-        resultid = qsargs.get('resultid')
-        if not resultid or len(resultid) != 1:
-            raise ShareResultsSubmitFailure('Could not submit results to '
-                                            'speedtest.net')
-
-        self._share = 'http://www.speedtest.net/result/%s.png' % resultid[0]
-
-        return self._share
 
     def dict(self):
         """Return dictionary of result data"""
 
         return {
-            'download': self.download,
-            'upload': self.upload,
-            'ping': self.ping,
-            'server': self.server,
-            'timestamp': self.timestamp,
-            'bytes_sent': self.bytes_sent,
-            'bytes_received': self.bytes_received,
-            'share': self._share,
+            'download': self._download,
+            'upload': self._upload,
+            'ping': self._ping,
+            'server': self._server,
+            'timestamp': self._timestamp,
+            'bytes_sent': self._bytes_sent,
+            'bytes_received': self._bytes_received,
         }
 
-    def csv(self, delimiter=','):
-        """Return data in CSV format"""
-
-        data = self.dict()
-        out = StringIO()
-        writer = csv.writer(out, delimiter=delimiter, lineterminator='')
-        row = [data['server']['id'], data['server']['sponsor'],
-               data['server']['name'], data['timestamp'],
-               data['server']['d'], data['ping'], data['download'],
-               data['upload']]
-        writer.writerow([to_utf8(v) for v in row])
-        return out.getvalue()
-
-    def json(self, pretty=False):
-        """Return data in JSON format"""
-
-        kwargs = {}
-        if pretty:
-            kwargs.update({
-                'indent': 4,
-                'sort_keys': True
-            })
-        return json.dumps(self.dict(), **kwargs)
 
 class SpeedTest(object):
+    """ Perform speedtests using speedtest.net servers """
+
     def __init__(self, config=None):
         self.speed_request = SpeedTestRequest()
         self.config = {}
@@ -290,7 +227,7 @@ class SpeedTest(object):
         self.servers = {}
         self.closest = []
         self.best = {}
- 
+
         self.results = SpeedtestResults()
 
     def get_config(self):
@@ -299,26 +236,24 @@ class SpeedTest(object):
         """
 
         headers = {}
-        if gzip:
-            headers['Accept-Encoding'] = 'gzip'
+
         request = self.speed_request.build_request('://www.speedtest.net/speedtest-config.php',
-                                headers=headers)
-        uh, e = self.speed_request.catch_request(request)
-        if e:
+                                                   headers=headers)
+        response, exc = self.speed_request.catch_request(request)
+        if exc:
             print("Failed to get config")
             #raise ConfigRetrievalError(e)
         configxml = []
 
-        stream = self.speed_request.get_response_stream(uh)
+        #stream = self.speed_request.get_response_stream(strm)
 
         while 1:
-            configxml.append(stream.read(1024))
+            configxml.append(response.read(1024))
             if len(configxml[-1]) == 0:
                 break
-        stream.close()
-        uh.close()
+        response.close()
 
-        if int(uh.code) != 200:
+        if int(response.code) != 200:
             return None
 
         root = ET.fromstring(''.encode().join(configxml))
@@ -383,14 +318,12 @@ class SpeedTest(object):
 
         dlat = math.radians(lat2 - lat1)
         dlon = math.radians(lon2 - lon1)
-        a = (math.sin(dlat / 2) * math.sin(dlat / 2) +
-             math.cos(math.radians(lat1)) *
-             math.cos(math.radians(lat2)) * math.sin(dlon / 2) *
-             math.sin(dlon / 2))
-        c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-        d = radius * c
-
-        return d
+        calc1 = (math.sin(dlat / 2) * math.sin(dlat / 2) +
+                 math.cos(math.radians(lat1)) *
+                 math.cos(math.radians(lat2)) * math.sin(dlon / 2) *
+                 math.sin(dlon / 2))
+        calc2 = 2 * math.atan2(math.sqrt(calc1), math.sqrt(1 - calc1))
+        return radius * calc2
 
 
     def get_servers(self, servers=None):
@@ -402,12 +335,12 @@ class SpeedTest(object):
 
         self.servers.clear()
 
-        for i, s in enumerate(servers):
+        for i, srv in enumerate(servers):
             try:
-                servers[i] = int(s)
+                servers[i] = int(srv)
             except ValueError:
                 raise InvalidServerIDType('%s is an invalid server type, must '
-                                          'be int' % s)
+                                          'be int' % srv)
 
         urls = [
             '://www.speedtest.net/speedtest-servers-static.php',
@@ -417,33 +350,28 @@ class SpeedTest(object):
         ]
 
         headers = {}
-        if gzip:
-            headers['Accept-Encoding'] = 'gzip'
 
         errors = []
         for url in urls:
             try:
                 request = self.speed_request.build_request('%s?threads=%s' %
-                                        (url,
-                                         self.config['threads']['download']),
-                                        headers=headers)
-                uh, e = self.speed_request.catch_request(request)
-                if e:
-                    errors.append('%s' % e)
+                                                           (url,
+                                                            self.config['threads']['download']),
+                                                           headers=headers)
+                response, exc = self.speed_request.catch_request(request)
+                if exc:
+                    errors.append('%s' % exc)
                     raise ServersRetrievalError()
-
-                stream = self.speed_request.get_response_stream(uh)
 
                 serversxml = []
                 while 1:
-                    serversxml.append(stream.read(1024))
+                    serversxml.append(response.read(1024))
                     if len(serversxml[-1]) == 0:
                         break
 
-                stream.close()
-                uh.close()
+                response.close()
 
-                if int(uh.code) != 200:
+                if int(response.code) != 200:
                     raise ServersRetrievalError()
 
                 #print(''.encode().join(serversxml))
@@ -467,18 +395,18 @@ class SpeedTest(object):
                         continue
 
                     try:
-                        d = self.distance(self.lat_lon,
-                                     (float(attrib.get('lat')),
-                                      float(attrib.get('lon'))))
+                        dist = self.distance(self.lat_lon,
+                                             (float(attrib.get('lat')),
+                                              float(attrib.get('lon'))))
                     except:
                         continue
 
-                    attrib['d'] = d
+                    attrib['d'] = dist
 
                     try:
-                        self.servers[d].append(attrib)
+                        self.servers[dist].append(attrib)
                     except KeyError:
-                        self.servers[d] = [attrib]
+                        self.servers[dist] = [attrib]
 
                 #print ''.encode().join(serversxml)
 
@@ -511,27 +439,24 @@ class SpeedTest(object):
             #print('%s %s/latency.txt' % ('GET', url))
             for _ in range(0, 3):
                 try:
-                    if urlparts[0] == 'https':
-                        h = HTTPSConnection(urlparts[1])
-                    else:
-                        h = HTTPConnection(urlparts[1])
+                    hconn = HTTPConnection(urlparts[1])
                     headers = {'User-Agent': self.speed_request.user_agent}
                     start = timeit.default_timer()
-                    h.request("GET", urlparts[2], headers=headers)
-                    r = h.getresponse()
+                    hconn.request("GET", urlparts[2], headers=headers)
+                    req = hconn.getresponse()
                     total = (timeit.default_timer() - start)
                 except HTTP_ERRORS:
-                    e = get_exception()
-                    print('%r' % e)
+                    exc = get_exception()
+                    print('%r' % exc)
                     cum.append(3600)
                     continue
 
-                text = r.read(9)
-                if int(r.status) == 200 and text == 'test=test'.encode():
+                text = req.read(9)
+                if int(req.status) == 200 and text == 'test=test'.encode():
                     cum.append(total)
                 else:
                     cum.append(3600)
-                h.close()
+                hconn.close()
 
             avg = round((sum(cum) / 6) * 1000.0, 3)
             results[avg] = server
@@ -559,9 +484,9 @@ class SpeedTest(object):
         if not self.servers:
             self.get_servers()
 
-        for d in sorted(self.servers.keys()):
-            for s in self.servers[d]:
-                self.closest.append(s)
+        for dist in sorted(self.servers.keys()):
+            for srv in self.servers[dist]:
+                self.closest.append(srv)
                 if len(self.closest) == limit:
                     break
             else:
@@ -578,22 +503,21 @@ class SpeedTest(object):
             urls.append('%s/random%sx%s.jpg' %
                         (os.path.dirname(self.best['url']), size, size))
 
-        request_count = len(urls)
         results = []
         times = []
 
-        for i, url in enumerate(urls):
+        for i, url in enumerate(urls[:-1]):
             print('Download: ', url)
             request = self.speed_request.build_request(url, bump=i)
-            f = urlopen(request)
-            
+            urlstream = urlopen(request)
+
             start = timeit.default_timer()
-            result = f.read()
+            result = urlstream.read()
             stop = timeit.default_timer()
 
             times.append(stop - start)
             results.append(len(result))
-            f.close()
+            urlstream.close()
 
         self.results.bytes_received = sum(results)
         self.results.download = (
@@ -605,17 +529,17 @@ class SpeedTest(object):
 
 
 if __name__ == '__main__':
-    units = ('bit', 1) # ('bytes', 8)
-    st = SpeedTest()
-    print('Testing from %(isp)s (%(ip)s)...' % st.config['client'])
+    UNITS = ('bit', 1) # ('bytes', 8)
+    SPEEDTEST = SpeedTest()
+    print('Testing from %(isp)s (%(ip)s)...' % SPEEDTEST.config['client'])
     print('Retrieving speedtest.net server list...')
-    st.get_servers()
+    SPEEDTEST.get_servers()
     print('Selecting best server based on ping...')
-    st.get_best_server()
+    SPEEDTEST.get_best_server()
     print('Hosted by %(sponsor)s (%(name)s) [%(d)0.2f km]: '
-            '%(latency)s ms' % st.results.server)
+          '%(latency)s ms' % SPEEDTEST.results.server)
     print('Testing download speed')
-    st.download()
+    SPEEDTEST.download()
     print('Download: %0.2f M%s/s' %
-                ((st.results.download / 1000.0 / 1000.0) / units[1],
-                 units[0]))
+          ((SPEEDTEST.results.download / 1000.0 / 1000.0) / UNITS[1],
+           UNITS[0]))
