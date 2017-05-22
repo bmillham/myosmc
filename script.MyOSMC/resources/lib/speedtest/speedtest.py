@@ -1,7 +1,9 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-"""speedtest-osmc: put osmc license and other stuff here"""
+"""speedtest-osmc: put osmc license and other stuff here
+   TODO: Add error checking
+"""
 
 from __future__ import division, print_function
 import os
@@ -217,17 +219,19 @@ class SpeedtestResults(object):
 class SpeedTest(object):
     """ Perform speedtests using speedtest.net servers """
 
-    def __init__(self, config=None):
+    def __init__(self, config=None, url=None, timeout=None):
         self.speed_request = SpeedTestRequest()
         self.config = {}
-        self.get_config()
+        if url is None:
+            self.get_config()
         if config is not None:
             self.config.update(config)
 
         self.servers = {}
         self.closest = []
         self.best = {}
-
+        self.url = url
+        self.timeout = timeout
         self.results = SpeedtestResults()
 
     def get_config(self):
@@ -499,15 +503,19 @@ class SpeedTest(object):
         """Test without threads"""
 
         urls = []
-        for size in self.config['sizes']['download']:
-            urls.append('%s/random%sx%s.jpg' %
-                        (os.path.dirname(self.best['url']), size, size))
+        if self.url is None:
+            for size in self.config['sizes']['download']:
+                urls.append('%s/random%sx%s.jpg' %
+                            (os.path.dirname(self.best['url']), size, size))
+        else:
+            urls.append(self.url)
 
         results = []
         times = []
 
-        for i, url in enumerate(urls[:-1]):
-            print('Download: ', url)
+        starttime = timeit.default_timer()
+        for i, url in enumerate(urls):
+            print('Downloading from: ', url)
             request = self.speed_request.build_request(url, bump=i)
             urlstream = urlopen(request)
 
@@ -518,28 +526,56 @@ class SpeedTest(object):
             times.append(stop - start)
             results.append(len(result))
             urlstream.close()
+            endtime = timeit.default_timer()
+            if self.timeout is None:
+                continue
+            elif starttime + self.timeout < endtime:
+                # Over the timeout limit. Don't try anymore URLs
+                break
 
         self.results.bytes_received = sum(results)
-        self.results.download = (
-            (self.results.bytes_received / (sum(times))) * 8.0
-        )
-        if self.results.download > 100000:
-            self.config['threads']['upload'] = 8
+        self.results.download = (self.results.bytes_received / (sum(times))) * 8.0
+
         return self.results.download
 
 
 if __name__ == '__main__':
-    UNITS = ('bit', 1) # ('bytes', 8)
-    SPEEDTEST = SpeedTest()
-    print('Testing from %(isp)s (%(ip)s)...' % SPEEDTEST.config['client'])
-    print('Retrieving speedtest.net server list...')
-    SPEEDTEST.get_servers()
-    print('Selecting best server based on ping...')
-    SPEEDTEST.get_best_server()
-    print('Hosted by %(sponsor)s (%(name)s) [%(d)0.2f km]: '
-          '%(latency)s ms' % SPEEDTEST.results.server)
+    """ A crude cli. Accepts --url for a specific file to test from.
+                     If --url is defined, speedtest.net servers are not contacted for the test.
+                     Other options:
+                      --timeout=0.0 for a max time to test (but for now will not interrupt a current download)
+                      --units=bit or --units=bytes for reporting bit or bytes. Default: bytes
+        TODO: Improve argument checking and error checking
+        TODO: If we decided to keep the cli arguments, use a module to parse them.
+    """
+
+    UNITS = {'bit': 1, 'bytes': 8}
+    URL = None
+    TIMEOUT = None
+    MY_UNITS = 'bytes'
+
+    for arg in sys.argv:
+        if arg.startswith('--url='):
+            URL = arg.split('=')[1]
+        if arg.startswith('--timeout='):
+            TIMEOUT = float(arg.split('=')[1])
+        if arg.startswith('--units='):
+            MY_UNITS = arg.split('=')[1]
+
+    SPEEDTEST = SpeedTest(url=URL, timeout=TIMEOUT)
+
+    if URL is None:
+        print('Testing from %(isp)s (%(ip)s)...' % SPEEDTEST.config['client'])
+        print('Retrieving speedtest.net server list...')
+        SPEEDTEST.get_servers()
+        print('Selecting best server based on ping...')
+        SPEEDTEST.get_best_server()
+        print('Hosted by %(sponsor)s (%(name)s) [%(d)0.2f km]: '
+              '%(latency)s ms' % SPEEDTEST.results.server)
+    else:
+        print('Testing from user supplied URL:', URL)
     print('Testing download speed')
     SPEEDTEST.download()
     print('Download: %0.2f M%s/s' %
-          ((SPEEDTEST.results.download / 1000.0 / 1000.0) / UNITS[1],
-           UNITS[0]))
+          ((SPEEDTEST.results.download / 1000.0 / 1000.0) / UNITS[MY_UNITS],
+           MY_UNITS))
