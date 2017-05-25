@@ -83,7 +83,11 @@ class MyHttpDownloader(speedtest.HTTPDownloader, LabelController):
 
     # Class variables are shared by all instances of the class
     # These would need to be reset to zero when the test is restarted.
+
+    _units = ('bit', 1) # The default
+
     __metaclass__ = MetaClass # So we can change the units
+
     total_downloaded = 0
 
     def __init__(self, i, request, start, timeout):
