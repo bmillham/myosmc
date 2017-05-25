@@ -14,6 +14,8 @@ SHUTDOWN_EVENT = speedtest.FakeShutdownEvent()
 class MetaClass(type):
     """ A metaclass so we can set the units on a class """
 
+    _units = ('bit', 1)
+
     @property
     def units(cls):
         """Report units"""
